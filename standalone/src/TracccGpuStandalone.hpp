@@ -526,6 +526,8 @@ TracccResults TracccGpuStandalone::run(std::vector<traccc::io::csv::cell> cells,
     // If the user requested only clusterization, return the measurements and exit early
     if (mode == PipelineMode::CLUSTERIZATION) {
         traccc::edm::measurement_collection::host measurements_host(m_host_mr);
+	if (show_stats) start_copy_out = std::chrono::high_resolution_clock::now();
+
         m_copy(measurements, measurements_host,
             vecmem::copy::type::device_to_host)->wait();
         m_stream.synchronize();
