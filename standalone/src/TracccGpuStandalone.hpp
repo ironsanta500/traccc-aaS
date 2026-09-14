@@ -129,11 +129,6 @@ struct TracccResults {
     traccc::edm::track_container<traccc::default_algebra>::host tracks_and_states;
 };
 
-// struct TracccResults {
-//     traccc::edm::track_container<traccc::default_algebra>::host tracks_and_states;
-//     traccc::edm::measurement_collection::host measurements;
-// };
-
 traccc::magnetic_field make_magnetic_field(std::string filename) {
     traccc::magnetic_field result;
     traccc::io::read_magnetic_field(result, filename, traccc::data_format::binary);
@@ -328,8 +323,7 @@ public:
         vecmem::host_memory_resource* host_mr,
         vecmem::cuda::device_memory_resource* device_mr,
         int deviceID = 0,
-        // const std::string& geoDir = "/global/cfs/projectdirs/m3443/data/GNN4ITK-traccc/ITk_data/ATLAS-P2-RUN4-03-00-01/itk-geo/") :
-        const std::string& geoDir = "/traccc/itk-geometry/") : // Assume I'm using apptainer because this is the path that I set to add the geometry files - Eric Le
+        const std::string& geoDir = "/traccc/itk-geometry/") :
             m_device_id(deviceID), 
             m_geoDir(geoDir),
             logger(traccc::getDefaultLogger("TracccGpuStandalone", traccc::Logging::Level::INFO)),
@@ -435,14 +429,12 @@ void TracccGpuStandalone::initialize()
         m_detray_to_athena_map[detray_id] = athena_id;
     }
     
-    std::cout << "before read_detector_description" << std::endl;
 
     traccc::io::read_detector_description(
         m_det_descr_storage, m_det_cond_storage, m_detector_opts.detector_file,
         m_detector_opts.digitization_file, m_detector_opts.conditions_file,
         traccc::data_format::json);
 
-    std::cout << "after read_detector_description" << std::endl;
     // The design description holds jagged bin-edge arrays, so its device buffer
     // needs a per-element capacity and must be resizable.
     std::vector<unsigned int> descr_sizes(m_det_descr_storage.size());
@@ -453,14 +445,11 @@ void TracccGpuStandalone::initialize()
             static_cast<unsigned int>(this_design.bin_edges_y().size()));
     }
 
-    std::cout << "before m_device_det_descr" << std::endl;
     m_device_det_descr = traccc::detector_design_description::buffer(
         descr_sizes, *m_device_mr, &m_host_mr,
         vecmem::data::buffer_type::resizable);
     m_copy.setup(m_device_det_descr)->wait();
     m_copy(vecmem::get_data(m_det_descr_storage), m_device_det_descr)->wait();
-
-    std::cout << "after m_device_det_descr" << std::endl;
 
     m_device_det_cond = traccc::detector_conditions_description::buffer(
         static_cast<traccc::detector_conditions_description::buffer::size_type>(
@@ -470,8 +459,6 @@ void TracccGpuStandalone::initialize()
     m_copy(vecmem::get_data(m_det_cond_storage), m_device_det_cond)->wait();
     m_stream.synchronize();
 
-    std::cout << "after m_device_det_cond" << std::endl;
-
     // fill the module (conditions) index to geometry id map
     m_geomIdMap.clear();
     m_geomIdMap.reserve(m_det_cond_storage.geometry_id().size());
@@ -479,20 +466,15 @@ void TracccGpuStandalone::initialize()
         m_geomIdMap[m_det_cond_storage.geometry_id()[i].value()] = i;
     }
 
-    std::cout << "before read_detector" << std::endl;
 
     traccc::io::read_detector(
         m_detector, m_host_mr, m_detector_opts.detector_file,
         m_detector_opts.material_file, m_detector_opts.grid_file);
 
-    std::cout << " after read_detector" << std::endl;
     m_device_detector =
         traccc::buffer_from_host_detector(m_detector, *m_device_mr, m_copy);
     
-    std::cout << "before synchronize" << std::endl;
     m_stream.synchronize();
-
-    std::cout << "after buffer_from_host_detector" << std::endl;
 
     return;
 }
