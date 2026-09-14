@@ -482,86 +482,100 @@ void TracccGpuStandalone::initialize()
 
 
 TracccResults TracccGpuStandalone::run(std::vector<traccc::io::csv::cell> cells, PipelineMode mode,bool show_stats) {
-    if (show_stats) start_total = std::chrono::high_resolution_clock::now();
+        if (show_stats) start_total = std::chrono::high_resolution_clock::now();
 
-    // Read cells
-    if (show_stats) start_read = std::chrono::high_resolution_clock::now();
-    traccc::edm::silicon_cell_collection::host read_out(m_host_mr);
-    read_cells(read_out, cells);
-    if (show_stats) end_read = std::chrono::high_resolution_clock::now();
+        // Read cells
+        if (show_stats) start_read = std::chrono::high_resolution_clock::now();
+        traccc::edm::silicon_cell_collection::host read_out(m_host_mr);
+        read_cells(read_out, cells);
+        if (show_stats) end_read = std::chrono::high_resolution_clock::now();
 
-    // Copy to device
-    if (show_stats) start_copy_in = std::chrono::high_resolution_clock::now();
-    traccc::edm::silicon_cell_collection::buffer cells_buffer(
-        static_cast<unsigned int>(read_out.size()), m_cached_device_mr);
-    m_copy(vecmem::get_data(read_out), cells_buffer)->ignore();
-    if (show_stats) end_copy_in = std::chrono::high_resolution_clock::now();
+        // Copy to device
+        if (show_stats) start_copy_in = std::chrono::high_resolution_clock::now();
+        traccc::edm::silicon_cell_collection::buffer cells_buffer(
+            static_cast<unsigned int>(read_out.size()), m_cached_device_mr);
+        m_copy(vecmem::get_data(read_out), cells_buffer)->ignore();
+        if (show_stats) end_copy_in = std::chrono::high_resolution_clock::now();
 
-    // Clusterization
-    if (show_stats) start_cluster = std::chrono::high_resolution_clock::now();
-    auto unsorted_measurements =
-        m_clusterization(cells_buffer, m_device_det_descr, m_device_det_cond);
-    auto measurements =
-        m_measurement_sorting(unsorted_measurements);
-    if (show_stats) end_cluster = std::chrono::high_resolution_clock::now();
+        // Clusterization
+        if (show_stats) start_cluster = std::chrono::high_resolution_clock::now();
+        auto unsorted_measurements =
+            m_clusterization(cells_buffer, m_device_det_descr, m_device_det_cond);
+        auto measurements =
+            m_measurement_sorting(unsorted_measurements);
+        if (show_stats) end_cluster = std::chrono::high_resolution_clock::now();
 
-    // If the user requested only clusterization, return the measurements and exit early
-    if (mode == PipelineMode::CLUSTERIZATION) {
+        // If the user requested only clusterization, return the measurements and exit early
         traccc::edm::measurement_collection::host measurements_host(m_host_mr);
-	if (show_stats) start_copy_out = std::chrono::high_resolution_clock::now();
 
-        m_copy(measurements, measurements_host,
-            vecmem::copy::type::device_to_host)->wait();
-        m_stream.synchronize();
 
-        if (show_stats) end_copy_out = std::chrono::high_resolution_clock::now();
-        if (show_stats) {
-            auto end_total = std::chrono::high_resolution_clock::now();
-            std::cout << "\n=== Timing Information (CLUSTERIZATION) ===" << std::endl;
-            std::cout << "Read cells:          "
-                    << std::chrono::duration<double, std::milli>(end_read - start_read).count()
-                    << " ms" << std::endl;
-            std::cout << "Copy to device:      "
-                    << std::chrono::duration<double, std::milli>(end_copy_in - start_copy_in).count()
-                    << " ms" << std::endl;
-            std::cout << "Clusterization:      "
-                    << std::chrono::duration<double, std::milli>(end_cluster - start_cluster).count()
-                    << " ms" << std::endl;
-            std::cout << "Copy to host:        "
-                    << std::chrono::duration<double, std::milli>(end_copy_out - start_copy_out).count()
-                    << " ms" << std::endl;
-            std::cout << "------------------------" << std::endl;
-            std::cout << "Total time:          "
-                    << std::chrono::duration<double, std::milli>(end_total - start_total).count()
-                    << " ms" << std::endl;
-            std::cout << "=========================\n" << std::endl;
-            std::cout << "Number of measurements: " << measurements_host.size() << std::endl;
-        }
-        return {mode, std::move(measurements_host),
-                traccc::edm::spacepoint_collection::host{m_host_mr},
-                traccc::edm::seed_collection::host{m_host_mr},
-                traccc::edm::track_container<traccc::default_algebra>::host{m_host_mr}};
-        }  
+        // Spacepoint formation
+        if (show_stats) start_spacepoint = std::chrono::high_resolution_clock::now();
+        auto spacepoints =
+            m_spacepoint_formation(m_device_detector, measurements);
+        if (show_stats) end_spacepoint = std::chrono::high_resolution_clock::now();
 
-    // Spacepoint formation
-    if (show_stats) start_spacepoint = std::chrono::high_resolution_clock::now();
-    auto spacepoints =
-        m_spacepoint_formation(m_device_detector, measurements);
-    if (show_stats) end_spacepoint = std::chrono::high_resolution_clock::now();
-
-    if (mode == PipelineMode::SPACEPOINT_FORMATION) {
-        traccc::edm::measurement_collection::host measurements_host(m_host_mr);
         traccc::edm::spacepoint_collection::host spacepoints_host(m_host_mr);
+
+
+        // Seeding
+        if (show_stats) start_seeding = std::chrono::high_resolution_clock::now();
+        auto seeds = m_seeding(spacepoints);
+        if (show_stats) end_seeding = std::chrono::high_resolution_clock::now();
+
+        traccc::edm::seed_collection::host seeds_host(m_host_mr);
+
+      // Track parameter estimation
+        if (show_stats) start_params = std::chrono::high_resolution_clock::now();
+        auto track_params =
+            m_track_parameter_estimation(m_field, measurements, spacepoints, seeds);
+        if (show_stats) end_params = std::chrono::high_resolution_clock::now();
+
+        // Track finding
+        if (show_stats) start_finding = std::chrono::high_resolution_clock::now();
+        auto track_candidates = m_finding(
+            m_device_detector, m_field, measurements, track_params);
+        if (show_stats) end_finding = std::chrono::high_resolution_clock::now();
+
+        traccc::edm::track_container<traccc::default_algebra>::host
+            track_states_host{m_host_mr};
+
+
+        // copy measurements back to host
+        traccc::edm::measurement_collection::host measurements_host(m_host_mr);
+        m_copy(track_candidates.measurements, measurements_host, vecmem::copy::type::device_to_host)->wait();
+
+
+        // Copy device to host
         if (show_stats) start_copy_out = std::chrono::high_resolution_clock::now();
-        m_copy(measurements, measurements_host,
-            vecmem::copy::type::device_to_host)->wait();
-        m_copy(spacepoints, spacepoints_host,
-            vecmem::copy::type::device_to_host)->wait();
+            m_copy(measurements, measurements_host,
+                vecmem::copy::type::device_to_host)->wait();
+        
+        if (mode == PipelineMode::SPACEPOINT_FORMATION || mode == PipelineMode::SEEDING || mode == PipelineMode::TRACK_FINDING) {
+            m_copy(spacepoints, spacepoints_host,
+                vecmem::copy::type::device_to_host)->wait();
+        }
+
+        if (mode == PipelineMode::SEEDING || mode == PipelineMode::TRACK_FINDING){
+            m_copy(seeds, seeds_host,
+                vecmem::copy::type::device_to_host)->wait();
+        }
+
+        if (mode == PipelineMode::TRACK_FINDING) {
+            m_copy(track_candidates.tracks, track_states_host.tracks,
+                vecmem::copy::type::device_to_host)->wait();
+            m_copy(track_candidates.states, track_states_host.states,
+                vecmem::copy::type::device_to_host)->wait();
+        }
+
         m_stream.synchronize();
         if (show_stats) end_copy_out = std::chrono::high_resolution_clock::now();
+
+
+
         if (show_stats) {
             auto end_total = std::chrono::high_resolution_clock::now();
-            std::cout << "\n=== Timing Information (SPACEPOINT_FORMATION) ===" << std::endl;
+            std::cout << "\n=== Timing Information ===" << std::endl;
             std::cout << "Read cells:          "
                     << std::chrono::duration<double, std::milli>(end_read - start_read).count()
                     << " ms" << std::endl;
@@ -571,9 +585,34 @@ TracccResults TracccGpuStandalone::run(std::vector<traccc::io::csv::cell> cells,
             std::cout << "Clusterization:      "
                     << std::chrono::duration<double, std::milli>(end_cluster - start_cluster).count()
                     << " ms" << std::endl;
-            std::cout << "Spacepoint form.:    "
+            std::cout << "Number of measurements: " << m_copy.get_size(measurements) << std::endl;
+
+            if ((mode == PipelineMode::SPACEPOINT_FORMATION || mode == PipelineMode::SEEDING || mode == PipelineMode::TRACK_FINDING)) {
+                std::cout << "Spacepoint form.:    "
                     << std::chrono::duration<double, std::milli>(end_spacepoint - start_spacepoint).count()
                     << " ms" << std::endl;
+                std::cout << "Number of spacepoints: " << m_copy.get_size(spacepoints) << std::endl;
+            }
+
+            if ((mode == PipelineMode::SEEDING || mode == PipelineMode::TRACK_FINDING)) {
+                std::cout << "Seeding:             "
+                    << std::chrono::duration<double, std::milli>(end_seeding - start_seeding).count()
+                    << " ms" << std::endl;
+                std::cout << "Number of seeds: " << m_copy.get_size(seeds) << std::endl;
+            }
+
+            if (mode == PipelineMode::TRACK_FINDING) {
+                std::cout << "Track param. est.:   " 
+                        << std::chrono::duration<double, std::milli>(end_params - start_params).count() 
+                        << " ms" << std::endl;
+                std::cout << "Track finding:       " 
+                        << std::chrono::duration<double, std::milli>(end_finding - start_finding).count() 
+                        << " ms" << std::endl;
+
+                std::cout << "Number of track params: " << m_copy.get_size(track_params) << std::endl;
+
+                std::cout << "Number of smoothed tracks: " << track_states_host.tracks.size() << std::endl;  
+                      }
             std::cout << "Copy to host:        "
                     << std::chrono::duration<double, std::milli>(end_copy_out - start_copy_out).count()
                     << " ms" << std::endl;
@@ -582,154 +621,38 @@ TracccResults TracccGpuStandalone::run(std::vector<traccc::io::csv::cell> cells,
                     << std::chrono::duration<double, std::milli>(end_total - start_total).count()
                     << " ms" << std::endl;
             std::cout << "=========================\n" << std::endl;
-            std::cout << "Number of measurements: " << measurements_host.size() << std::endl;
-            std::cout << "Number of spacepoints: " << spacepoints_host.size() << std::endl;
         }
-        return {mode, std::move(measurements_host), std::move(spacepoints_host),
-                traccc::edm::seed_collection::host{m_host_mr},
-                traccc::edm::track_container<traccc::default_algebra>::host{m_host_mr}};
-    }
 
+        if (mode == PipelineMode::CLUSTERIZATION) {
 
-    // Seeding
-    if (show_stats) start_seeding = std::chrono::high_resolution_clock::now();
-    auto seeds = m_seeding(spacepoints);
-    if (show_stats) end_seeding = std::chrono::high_resolution_clock::now();
+            return {mode, std::move(measurements_host),
+                    traccc::edm::spacepoint_collection::host{m_host_mr},
+                    traccc::edm::seed_collection::host{m_host_mr},
+                    traccc::edm::track_container<traccc::default_algebra>::host{m_host_mr}};
+            }  
+        if (mode == PipelineMode::SPACEPOINT_FORMATION) {
 
-    if (mode == PipelineMode::SEEDING) {
-        traccc::edm::measurement_collection::host measurements_host(m_host_mr);
-        traccc::edm::spacepoint_collection::host spacepoints_host(m_host_mr);
-        traccc::edm::seed_collection::host seeds_host(m_host_mr);
-        if (show_stats) start_copy_out = std::chrono::high_resolution_clock::now();
-        m_copy(measurements, measurements_host,
-            vecmem::copy::type::device_to_host)->wait();
-        m_copy(spacepoints, spacepoints_host,
-            vecmem::copy::type::device_to_host)->wait();
-        m_copy(seeds, seeds_host,
-            vecmem::copy::type::device_to_host)->wait();
-        m_stream.synchronize();
-        if (show_stats) end_copy_out = std::chrono::high_resolution_clock::now();
-            if (show_stats) {
-                auto end_total = std::chrono::high_resolution_clock::now();
-                std::cout << "\n=== Timing Information (SEEDING) ===" << std::endl;
-                std::cout << "Read cells:          "
-                        << std::chrono::duration<double, std::milli>(end_read - start_read).count()
-                        << " ms" << std::endl;
-                std::cout << "Copy to device:      "
-                        << std::chrono::duration<double, std::milli>(end_copy_in - start_copy_in).count()
-                        << " ms" << std::endl;
-                std::cout << "Clusterization:      "
-                        << std::chrono::duration<double, std::milli>(end_cluster - start_cluster).count()
-                        << " ms" << std::endl;
-                std::cout << "Spacepoint form.:    "
-                        << std::chrono::duration<double, std::milli>(end_spacepoint - start_spacepoint).count()
-                        << " ms" << std::endl;
-                std::cout << "Seeding:             "
-                        << std::chrono::duration<double, std::milli>(end_seeding - start_seeding).count()
-                        << " ms" << std::endl;
-                std::cout << "Copy to host:        "
-                        << std::chrono::duration<double, std::milli>(end_copy_out - start_copy_out).count()
-                        << " ms" << std::endl;
-                std::cout << "------------------------" << std::endl;
-                std::cout << "Total time:          "
-                        << std::chrono::duration<double, std::milli>(end_total - start_total).count()
-                        << " ms" << std::endl;
-                std::cout << "=========================\n" << std::endl;
-                std::cout << "Number of measurements: " << measurements_host.size() << std::endl;
-                std::cout << "Number of spacepoints: " << spacepoints_host.size() << std::endl;
-                std::cout << "Number of seeds: " << seeds_host.size() << std::endl;
-            }
-        return {mode, std::move(measurements_host), std::move(spacepoints_host),
-                std::move(seeds_host),
-                traccc::edm::track_container<traccc::default_algebra>::host{m_host_mr}};
-    }
+            return {mode, std::move(measurements_host),
+                    std::move(spacepoints_host),
+                    traccc::edm::seed_collection::host{m_host_mr},
+                    traccc::edm::track_container<traccc::default_algebra>::host{m_host_mr}};
+            }  
+        if (mode == PipelineMode::SEEDING) {
 
+            return {mode, std::move(measurements_host),
+                    std::move(spacepoints_host),
+                    std::move(seeds_host),
+                    traccc::edm::track_container<traccc::default_algebra>::host{m_host_mr}};
+            }  
+        if (mode == PipelineMode::TRACK_FINDING) {
 
-
-    // if (mode == PipelineMode::TRACK_FINDING){
-    // If no early returns, then assume pipeline mode is TRACK_FINDING
-    // Track parameter estimation
-    if (show_stats) start_params = std::chrono::high_resolution_clock::now();
-    auto track_params =
-        m_track_parameter_estimation(m_field, measurements, spacepoints, seeds);
-    if (show_stats) end_params = std::chrono::high_resolution_clock::now();
-
-    // Track finding
-    if (show_stats) start_finding = std::chrono::high_resolution_clock::now();
-    auto track_candidates = m_finding(
-        m_device_detector, m_field, measurements, track_params);
-    if (show_stats) end_finding = std::chrono::high_resolution_clock::now();
-
-    // Copy results back to host
-    if (show_stats) start_copy_out = std::chrono::high_resolution_clock::now();
-    traccc::edm::track_container<traccc::default_algebra>::host
-        track_states_host{m_host_mr};
-
-    m_copy(track_candidates.tracks, track_states_host.tracks,
-            vecmem::copy::type::device_to_host)->wait();
-    m_copy(track_candidates.states, track_states_host.states,
-            vecmem::copy::type::device_to_host)->wait();
-
-    // copy measurements back to host
-    traccc::edm::measurement_collection::host measurements_host(m_host_mr);
-    m_copy(track_candidates.measurements, measurements_host, vecmem::copy::type::device_to_host)->wait();
-    if (show_stats) end_copy_out = std::chrono::high_resolution_clock::now();
-
-    if (show_stats) 
-    {
-        auto end_total = std::chrono::high_resolution_clock::now();
-
-        // Print timing information
-        std::cout << "\n=== Timing Information ===" << std::endl;
-        std::cout << "Read cells:          " 
-                << std::chrono::duration<double, std::milli>(end_read - start_read).count() 
-                << " ms" << std::endl;
-        std::cout << "Copy to device:      " 
-                << std::chrono::duration<double, std::milli>(end_copy_in - start_copy_in).count() 
-                << " ms" << std::endl;
-        std::cout << "Clusterization:      " 
-                << std::chrono::duration<double, std::milli>(end_cluster - start_cluster).count() 
-                << " ms" << std::endl;
-        std::cout << "Spacepoint form.:    " 
-                << std::chrono::duration<double, std::milli>(end_spacepoint - start_spacepoint).count() 
-                << " ms" << std::endl;
-        std::cout << "Seeding:             " 
-                << std::chrono::duration<double, std::milli>(end_seeding - start_seeding).count() 
-                << " ms" << std::endl;
-        std::cout << "Track param. est.:   " 
-                << std::chrono::duration<double, std::milli>(end_params - start_params).count() 
-                << " ms" << std::endl;
-        std::cout << "Track finding:       " 
-                << std::chrono::duration<double, std::milli>(end_finding - start_finding).count() 
-                << " ms" << std::endl;
-        // std::cout << "Track fitting:       " 
-        //         << std::chrono::duration<double, std::milli>(end_fitting - start_fitting).count() 
-        //         << " ms" << std::endl;
-        std::cout << "Copy to host:        " 
-                << std::chrono::duration<double, std::milli>(end_copy_out - start_copy_out).count() 
-                << " ms" << std::endl;
-        std::cout << "------------------------" << std::endl;
-        std::cout << "Total time:          " 
-                << std::chrono::duration<double, std::milli>(end_total - start_total).count() 
-                << " ms" << std::endl;
-        std::cout << "=========================\n" << std::endl;
-
-        std::cout << "Number of measurements: " << m_copy.get_size(measurements) << std::endl;
-        std::cout << "Number of spacepoints: " << m_copy.get_size(spacepoints) << std::endl;
-        std::cout << "Number of seeds: " << m_copy.get_size(seeds) << std::endl;
-        std::cout << "Number of track params: " << m_copy.get_size(track_params) << std::endl;
-        traccc::edm::track_container<traccc::default_algebra>::host track_candidates_host{m_host_mr};
-        m_copy(track_candidates.tracks, track_candidates_host.tracks,
-            vecmem::copy::type::device_to_host)->wait();
-        std::cout << "Number of smoothed tracks: " << track_states_host.tracks.size() << std::endl;
-
-    }
-
-        return {mode, std::move(measurements_host),
-                traccc::edm::spacepoint_collection::host{m_host_mr},
-                traccc::edm::seed_collection::host{m_host_mr},
-                std::move(track_states_host)};
+            return {mode, std::move(measurements_host),
+                    std::move(spacepoints_host),
+                    std::move(seeds_host),
+                    std::move(track_states_host)};
+            }  
 }
+
 
 
 std::vector<traccc::io::csv::cell> TracccGpuStandalone::read_from_array(
