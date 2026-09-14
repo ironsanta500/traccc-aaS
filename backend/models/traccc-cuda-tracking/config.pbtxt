@@ -42,7 +42,3 @@ instance_group [
     gpus: [0]
   }
 ]
-parameters: {
-  key: "pipeline_mode"
-  value: { string_value: "TRACK_FINDING" }
-}
