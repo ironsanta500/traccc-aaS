@@ -542,8 +542,8 @@ TracccResults TracccGpuStandalone::run(std::vector<traccc::io::csv::cell> cells,
 
 
         // copy measurements back to host
-        traccc::edm::measurement_collection::host measurements_host(m_host_mr);
-        m_copy(track_candidates.measurements, measurements_host, vecmem::copy::type::device_to_host)->wait();
+        traccc::edm::measurement_collection::host track_measurements_host(m_host_mr);
+        m_copy(track_candidates.measurements, track_measurements_host, vecmem::copy::type::device_to_host)->wait();
 
 
         // Copy device to host
@@ -646,7 +646,7 @@ TracccResults TracccGpuStandalone::run(std::vector<traccc::io::csv::cell> cells,
             }  
         if (mode == PipelineMode::TRACK_FINDING) {
 
-            return {mode, std::move(measurements_host),
+            return {mode, std::move(track_measurements_host),
                     std::move(spacepoints_host),
                     std::move(seeds_host),
                     std::move(track_states_host)};
